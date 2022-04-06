@@ -1,0 +1,224 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Transform: AWS::Serverless-2016-10-31
+Description: >
+  minecraft_server
+
+# More info about Globals: https://github.com/awslabs/serverless-application-model/blob/master/docs/globals.rst
+Globals:
+  Function:
+    Timeout: 600
+
+Parameters:
+  # ディスコード
+  DiscordToken:
+    Description: Discord Token. Must be prefixed with 'Bot' or 'Bearer'.
+    NoEcho: true
+    Type: String
+  ApplicationID:
+    Description: Discord Application ID (Client ID)
+    Type: String
+  ApplicationPublicKey:
+    Description: Discord Application Public Key
+    Type: String
+  CommandGuildID:
+    Description: Discord Guild ID to register commands. Defaults to global commands.
+    Type: String
+  CommandChannelID:
+    Description: Discord Channel ID to register commands. Defaults to global commands.
+    Type: String
+
+  # EC2
+  EC2InstanceID:
+    Description: Minecraft Server EC2 Instance ID.
+    Type: String
+
+Resources:
+  # Discord Slash Commandのコールバック
+  SlashCommandsCallbackFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      CodeUri: src/slash_commands_callback
+      Handler: app.lambda_handler
+      Runtime: python3.9
+      Events:
+        HelloWorld:
+          Type: HttpApi
+          Properties:
+            Path: /callback
+            Method: POST
+      Environment:
+        Variables:
+          DISCORD_TOKEN: !Ref DiscordToken
+          APPLICATION_ID: !Ref ApplicationID
+          APPLICATION_PUBLIC_KEY: !Ref ApplicationPublicKey
+          COMMAND_GUILD_ID: !Ref CommandGuildID
+          START_EC2_LAMBDA_FUNCTION: !Ref StartEC2Function
+          STOP_EC2_LAMBDA_FUNCTION: !Ref StopEC2Function
+          RESTART_EC2_LAMBDA_FUNCTION: !Ref RestartEC2Function
+      Policies:
+        - LambdaInvokePolicy:
+            FunctionName: !Ref StartEC2Function
+        - LambdaInvokePolicy:
+            FunctionName: !Ref StopEC2Function
+        - LambdaInvokePolicy:
+            FunctionName: !Ref RestartEC2Function
+
+  # EC2起動
+  StartEC2Function:
+    Type: AWS::Serverless::Function
+    Properties:
+      CodeUri: src/start_ec2
+      Handler: app.lambda_handler
+      Runtime: python3.9
+      Environment:
+        Variables:
+          DISCORD_TOKEN: !Ref DiscordToken
+          COMMAND_CHANNEL_ID: !Ref CommandChannelID
+          EC2_INSTANCE_ID: !Ref EC2InstanceID
+          MONITERING_EVENT_NAME: !Ref MonitoringEC2ScheduleEvent
+      Policies:
+        - Statement:
+            - Sid: EC2DescribePolicy
+              Effect: Allow
+              Action:
+                - ec2:DescribeRegions
+                - ec2:DescribeInstanceStatus
+                - ec2:DescribeInstances
+                - ec2:StartInstances
+              Resource: '*'
+            - Sid: SSMCommandPolicy
+              Effect: Allow
+              Action:
+                - ssm:SendCommand
+                - ssm:GetCommandInvocation
+              Resource: '*'
+            - Sid: EventBridgePutEventsPolicy
+              Effect: Allow
+              Action:
+                - events:EnableRule
+              Resource: '*'
+
+  # EC2停止
+  StopEC2Function:
+    Type: AWS::Serverless::Function
+    Properties:
+      CodeUri: src/stop_ec2
+      Handler: app.lambda_handler
+      Runtime: python3.9
+      Environment:
+        Variables:
+          DISCORD_TOKEN: !Ref DiscordToken
+          COMMAND_CHANNEL_ID: !Ref CommandChannelID
+          EC2_INSTANCE_ID: !Ref EC2InstanceID
+          MONITERING_EVENT_NAME: !Ref MonitoringEC2ScheduleEvent
+      Policies:
+        - Statement:
+            - Sid: EC2DescribePolicy
+              Effect: Allow
+              Action:
+                - ec2:DescribeRegions
+                - ec2:DescribeInstanceStatus
+                - ec2:DescribeInstances
+                - ec2:StopInstances
+              Resource: '*'
+            - Sid: SSMCommandPolicy
+              Effect: Allow
+              Action:
+                - ssm:SendCommand
+                - ssm:GetCommandInvocation
+              Resource: '*'
+            - Sid: EventBridgePutEventsPolicy
+              Effect: Allow
+              Action:
+                - events:DisableRule
+              Resource: '*'
+  # EC2再起動
+  RestartEC2Function:
+    Type: AWS::Serverless::Function
+    Properties:
+      CodeUri: src/restart_ec2
+      Handler: app.lambda_handler
+      Runtime: python3.9
+      Environment:
+        Variables:
+          DISCORD_TOKEN: !Ref DiscordToken
+          COMMAND_CHANNEL_ID: !Ref CommandChannelID
+          EC2_INSTANCE_ID: !Ref EC2InstanceID
+      Policies:
+        - Statement:
+            - Sid: EC2DescribePolicy
+              Effect: Allow
+              Action:
+                - ec2:DescribeRegions
+                - ec2:DescribeInstanceStatus
+                - ec2:DescribeInstances
+                - ec2:RebootInstances
+              Resource: '*'
+            - Sid: SSMCommandPolicy
+              Effect: Allow
+              Action:
+                - ssm:SendCommand
+                - ssm:GetCommandInvocation
+              Resource: '*'
+
+  # EC2監視
+  MonitoringEC2ScheduleEvent:
+    Type: AWS::Events::Rule
+    Properties:
+      Description: ’monitoring ec2 schedule event for lambda’
+      ScheduleExpression: 'cron(*/5 * * * ? *)'
+      State: DISABLED
+      Targets:
+        - Arn: !GetAtt MonitoringEC2Function.Arn
+          Id: ScheduleEvent1Target
+  MonitoringEC2InvokePermission:
+    Type: AWS::Lambda::Permission
+    Properties:
+      Action: lambda:InvokeFunction
+      FunctionName: !Ref MonitoringEC2Function
+      Principal: events.amazonaws.com
+      SourceArn: !GetAtt MonitoringEC2ScheduleEvent.Arn
+  MonitoringEC2Function:
+    Type: AWS::Serverless::Function
+    Properties:
+      CodeUri: src/monitoring_ec2
+      Handler: app.lambda_handler
+      Runtime: python3.9
+      Environment:
+        Variables:
+          DISCORD_TOKEN: !Ref DiscordToken
+          COMMAND_CHANNEL_ID: !Ref CommandChannelID
+          EC2_INSTANCE_ID: !Ref EC2InstanceID
+          STACK_NAME: !Ref AWS::StackName
+      Policies:
+        - Statement:
+            - Sid: EC2DescribePolicy
+              Effect: Allow
+              Action:
+                - ec2:DescribeRegions
+                - ec2:DescribeInstanceStatus
+                - ec2:DescribeInstances
+                - ec2:StopInstances
+              Resource: '*'
+            - Sid: SSMCommandPolicy
+              Effect: Allow
+              Action:
+                - ssm:SendCommand
+                - ssm:GetCommandInvocation
+              Resource: '*'
+            - Sid: FilterLogEventsPolicy
+              Effect: Allow
+              Action:
+                - logs:DescribeLogStreams
+                - logs:GetLogEvents
+              Resource: '*'
+            - Sid: EventBridgePutEventsPolicy
+              Effect: Allow
+              Action:
+                - events:DisableRule
+                - events:ListRules
+              Resource: '*'
+Outputs:
+  CallbackAPIEndpoint:
+    Description: "API Gateway endpoint URL"
+    Value: !Sub "https://${ServerlessHttpApi}.execute-api.${AWS::Region}.amazonaws.com/callback"
